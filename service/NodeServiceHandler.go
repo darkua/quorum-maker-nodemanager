@@ -1,20 +1,22 @@
 package service
 
 import (
-	"net/http"
+	"bytes"
 	"encoding/json"
-	"github.com/gorilla/mux"
 	"fmt"
-	"strconv"
-	"strings"
 	"io"
 	"io/ioutil"
-	"bytes"
-	"time"
-	"github.com/magiconair/properties"
-	"github.com/synechron-finlabs/quorum-maker-nodemanager/util"
-	log "github.com/sirupsen/logrus"
+	"net/http"
 	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gorilla/mux"
+	"github.com/magiconair/properties"
+	log "github.com/sirupsen/logrus"
+	"github.com/synechron-finlabs/quorum-maker-nodemanager/util"
 )
 
 type contractJSON struct {
@@ -48,6 +50,7 @@ type IPList struct {
 
 var pendCount = 0
 var whiteList []string
+var whiteListRegex []string
 var allowedIPs = map[string]bool{}
 var nameMap = map[string]string{}
 var peerMap = map[string]string{}
@@ -61,7 +64,11 @@ func (nsi *NodeServiceImpl) IPWhitelister() {
 		whitelistedIPs, _ := util.File2lines("/root/quorum-maker/contracts/.whiteList")
 		whiteList = append(whiteList, whitelistedIPs...)
 		for _, ip := range whitelistedIPs {
-			allowedIPs[ip] = true
+			if strings.ContainsAny(ip, "*") {
+				whiteListRegex = append(whiteListRegex, ip)
+			} else {
+				allowedIPs[ip] = true
+			}
 		}
 		log.Info("Adding whitelisted IPs")
 	}()
@@ -77,7 +84,7 @@ func (nsi *NodeServiceImpl) UpdateWhitelistHandler(w http.ResponseWriter, r *htt
 	for _, ip := range ipList {
 		allowedIPs[ip] = true
 	}
-	whiteList = append(whiteList, ipList ...)
+	whiteList = append(whiteList, ipList...)
 	response := nsi.updateWhitelist(ipList)
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -130,6 +137,22 @@ func (nsi *NodeServiceImpl) JoinNetworkHandler(w http.ResponseWriter, r *http.Re
 	}
 }
 
+func checkWhiteList(ip string) bool {
+	//straight ip
+	if allowedIPs[ip] {
+		return true
+	}
+	//regex ip
+	canPass := false
+	for _, regex := range whiteListRegex {
+		var validation = regexp.MustCompile(fmt.Sprintf(`^%s`, regex))
+		if validation.MatchString(ip) {
+			canPass = true
+		}
+	}
+	return canPass
+}
+
 func (nsi *NodeServiceImpl) GetGenesisHandler(w http.ResponseWriter, r *http.Request) {
 	var request JoinNetworkRequest
 	_ = json.NewDecoder(r.Body).Decode(&request)
@@ -137,7 +160,11 @@ func (nsi *NodeServiceImpl) GetGenesisHandler(w http.ResponseWriter, r *http.Req
 	foreignIP := request.IPAddress
 	nodename := request.Nodename
 	//recipients := strings.Split(mailServerConfig.RecipientList, ",")
-	if allowedIPs[foreignIP] {
+	//check regex
+
+	isAllowed := checkWhiteList(foreignIP)
+
+	if isAllowed {
 		peerMap[enode] = "YES"
 		exists := util.PropertyExists("RECIPIENTLIST", "/home/setup.conf")
 		if exists != "" {
@@ -251,7 +278,7 @@ func (nsi *NodeServiceImpl) JoinRequestResponseHandler(w http.ResponseWriter, r 
 	status := request.Status
 	response := nsi.joinRequestResponse(enode, status)
 	channelMap[enode] <- status
-	delete(channelMap, enode);
+	delete(channelMap, enode)
 	w.Header().Set("Access-Control-Allow-Methods", "OPTIONS, GET, POST")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Depth, User-Agent, X-File-Size, X-Requested-With, If-Modified-Since, X-File-Name, Cache-Control")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
